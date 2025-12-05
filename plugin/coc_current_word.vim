@@ -21,3 +21,4 @@ augroup coc_current_word
 augroup END
 
 command! CocCurrentWordToggle call coc_current_word#coc_current_word_toggle()
+command! CocPersistentHighlightToggle call coc_current_word#toggle_persistent_highlight()

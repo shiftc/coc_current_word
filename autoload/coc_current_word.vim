@@ -77,3 +77,70 @@ endfunction
 function! coc_current_word#highlight_word_under_cursor(...)
   call CocActionAsync('highlight')
 endfunction
+
+" Toggle persistent highlight for current word
+function! coc_current_word#toggle_persistent_highlight()
+  let l:current_match_ids = get(w:, 'coc_current_word_persistent_match_ids', [])
+  
+  " If persistent highlight exists, clear it first
+  if !empty(l:current_match_ids)
+    for l:id in l:current_match_ids
+      try
+        call matchdelete(l:id)
+      catch /^Vim\%((\a\+)\)\=:E803/
+        " Ignore match not found error
+      endtry
+    endfor
+    let w:coc_current_word_persistent_match_ids = []
+    echo "Persistent highlight cleared"
+    
+    " Check if we are toggling off on the same word (simple heuristic)
+    " Ideally we should check if current cursor is inside one of the ranges,
+    " but clearing is always safe. If user wants to highlight again, they just press again.
+    return
+  endif
+
+  " If no highlight exists, request symbol ranges from coc.nvim
+  call CocActionAsync('symbolRanges', function('s:HandleSymbolRanges'))
+endfunction
+
+function! s:HandleSymbolRanges(err, ranges) abort
+  if a:err != v:null
+    echoerr 'Error getting symbol ranges: ' . a:err
+    return
+  endif
+
+  if empty(a:ranges)
+    echo "No semantic highlights found"
+    return
+  endif
+
+  let l:matches = []
+  " Convert LSP Ranges (0-based) to Vim matchaddpos format [[line, col, len], ...]
+  " matchaddpos expects 1-based line and column
+  for l:range in a:ranges
+    let l:start_line = l:range['start']['line'] + 1
+    let l:start_col = l:range['start']['character'] + 1
+    let l:end_line = l:range['end']['line'] + 1
+    let l:end_col = l:range['end']['character'] + 1
+    
+    " Handle single line matches only for matchaddpos (limit of vim)
+    " Multi-line semantic highlights are rare for 'word' highlighting
+    if l:start_line == l:end_line
+        let l:len = l:end_col - l:start_col
+        call add(l:matches, [l:start_line, l:start_col, l:len])
+    endif
+  endfor
+
+  if empty(l:matches)
+    return
+  endif
+
+  " matchaddpos has a limit of 8 positions per call in older vim, but modern vim/neovim supports list
+  " To be safe and compatible, we batch them or just pass the list if supported
+  " Neovim and recent Vim support passing a large list directly to matchaddpos
+  
+  let l:id = matchaddpos('CurrentWord', l:matches, 10)
+  let w:coc_current_word_persistent_match_ids = [l:id]
+  echo "Persistent semantic highlight added"
+endfunction
