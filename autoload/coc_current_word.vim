@@ -80,28 +80,60 @@ endfunction
 
 " Toggle persistent highlight for current word
 function! coc_current_word#toggle_persistent_highlight()
-  let l:current_match_ids = get(w:, 'coc_current_word_persistent_match_ids', [])
+  let l:highlights = get(w:, 'coc_persistent_highlights', [])
   
-  " If persistent highlight exists, clear it first
-  if !empty(l:current_match_ids)
-    for l:id in l:current_match_ids
-      try
-        call matchdelete(l:id)
-      catch /^Vim\%((\a\+)\)\=:E803/
-        " Ignore match not found error
-      endtry
+  " Check if cursor is on an existing highlight group
+  let l:cursor_pos = getpos('.')
+  let l:cursor_line = l:cursor_pos[1]
+  let l:cursor_col = l:cursor_pos[2]
+  let l:found_index = -1
+  
+  let l:idx = 0
+  for l:item in l:highlights
+    for l:range in l:item['ranges']
+       " range format: [line, col, len]
+       let l:r_line = l:range[0]
+       let l:r_col = l:range[1]
+       let l:r_len = l:range[2]
+       
+       if l:cursor_line == l:r_line && l:cursor_col >= l:r_col && l:cursor_col < (l:r_col + l:r_len)
+         let l:found_index = l:idx
+         break
+       endif
     endfor
-    let w:coc_current_word_persistent_match_ids = []
-    echo "Persistent highlight cleared"
-    
-    " Check if we are toggling off on the same word (simple heuristic)
-    " Ideally we should check if current cursor is inside one of the ranges,
-    " but clearing is always safe. If user wants to highlight again, they just press again.
-    return
-  endif
+    if l:found_index != -1
+      break
+    endif
+    let l:idx += 1
+  endfor
 
-  " If no highlight exists, request symbol ranges from coc.nvim
-  call CocActionAsync('symbolRanges', function('s:HandleSymbolRanges'))
+  if l:found_index != -1
+    " Case 1: Cursor is on an already highlighted word -> Remove ONLY this highlight group
+    let l:item = l:highlights[l:found_index]
+    try
+      call matchdelete(l:item['id'])
+    catch /^Vim\%((\a\+)\)\=:E803/
+      " Ignore match not found error
+    endtry
+    call remove(l:highlights, l:found_index)
+    let w:coc_persistent_highlights = l:highlights
+    echo "Persistent highlight cleared"
+  else
+    " Case 2: New highlight -> Add it (do not clear others)
+    call CocActionAsync('symbolRanges', function('s:HandleSymbolRanges'))
+  endif
+endfunction
+
+function! s:ClearPersistentHighlight()
+  " Helper to clear ALL highlights (if needed, though not used in toggle anymore)
+  let l:highlights = get(w:, 'coc_persistent_highlights', [])
+  for l:item in l:highlights
+    try
+      call matchdelete(l:item['id'])
+    catch /^Vim\%((\a\+)\)\=:E803/
+    endtry
+  endfor
+  let w:coc_persistent_highlights = []
 endfunction
 
 function! s:HandleSymbolRanges(err, ranges) abort
@@ -117,15 +149,12 @@ function! s:HandleSymbolRanges(err, ranges) abort
 
   let l:matches = []
   " Convert LSP Ranges (0-based) to Vim matchaddpos format [[line, col, len], ...]
-  " matchaddpos expects 1-based line and column
   for l:range in a:ranges
     let l:start_line = l:range['start']['line'] + 1
     let l:start_col = l:range['start']['character'] + 1
     let l:end_line = l:range['end']['line'] + 1
     let l:end_col = l:range['end']['character'] + 1
     
-    " Handle single line matches only for matchaddpos (limit of vim)
-    " Multi-line semantic highlights are rare for 'word' highlighting
     if l:start_line == l:end_line
         let l:len = l:end_col - l:start_col
         call add(l:matches, [l:start_line, l:start_col, l:len])
@@ -136,11 +165,11 @@ function! s:HandleSymbolRanges(err, ranges) abort
     return
   endif
 
-  " matchaddpos has a limit of 8 positions per call in older vim, but modern vim/neovim supports list
-  " To be safe and compatible, we batch them or just pass the list if supported
-  " Neovim and recent Vim support passing a large list directly to matchaddpos
-  
   let l:id = matchaddpos('CurrentWord', l:matches, 10)
-  let w:coc_current_word_persistent_match_ids = [l:id]
+  
+  let l:highlights = get(w:, 'coc_persistent_highlights', [])
+  call add(l:highlights, { 'id': l:id, 'ranges': l:matches })
+  let w:coc_persistent_highlights = l:highlights
+  
   echo "Persistent semantic highlight added"
 endfunction
