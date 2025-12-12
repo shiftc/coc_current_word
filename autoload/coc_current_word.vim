@@ -6,7 +6,8 @@ let g:coc_current_word_timer_id = 0
 function! coc_current_word#setup_autocommands()
   augroup coc_current_word_buffer
     autocmd! * <buffer>
-    autocmd BufEnter <buffer> call coc_current_word#pre_highlight()
+    autocmd BufEnter <buffer> call coc_current_word#handle_buf_enter()
+    autocmd BufLeave <buffer> call coc_current_word#handle_buf_leave()
     autocmd CursorMoved <buffer> call coc_current_word#pre_highlight()
     autocmd InsertEnter <buffer> call coc_current_word#handle_insert_enter()
     autocmd InsertLeave <buffer> call coc_current_word#handle_insert_leave()
@@ -78,9 +79,20 @@ function! coc_current_word#highlight_word_under_cursor(...)
   call CocActionAsync('highlight')
 endfunction
 
+function! coc_current_word#handle_buf_enter()
+  call coc_current_word#pre_highlight()
+  call s:RestorePersistentHighlights()
+endfunction
+
+function! coc_current_word#handle_buf_leave()
+  call s:ClearWindowHighlights()
+endfunction
+
 " Toggle persistent highlight for current word
 function! coc_current_word#toggle_persistent_highlight()
-  let l:highlights = get(w:, 'coc_persistent_highlights', [])
+  " Use b: variable for ranges data source, w: variable for current active matches
+  let l:highlight_groups = get(b:, 'coc_persistent_highlight_groups', [])
+  let l:active_matches = get(w:, 'coc_persistent_active_matches', [])
   
   " Check if cursor is on an existing highlight group
   let l:cursor_pos = getpos('.')
@@ -89,7 +101,7 @@ function! coc_current_word#toggle_persistent_highlight()
   let l:found_index = -1
   
   let l:idx = 0
-  for l:item in l:highlights
+  for l:item in l:highlight_groups
     for l:range in l:item['ranges']
        " range format: [line, col, len]
        let l:r_line = l:range[0]
@@ -109,31 +121,61 @@ function! coc_current_word#toggle_persistent_highlight()
 
   if l:found_index != -1
     " Case 1: Cursor is on an already highlighted word -> Remove ONLY this highlight group
-    let l:item = l:highlights[l:found_index]
-    try
-      call matchdelete(l:item['id'])
-    catch /^Vim\%((\a\+)\)\=:E803/
-      " Ignore match not found error
-    endtry
-    call remove(l:highlights, l:found_index)
-    let w:coc_persistent_highlights = l:highlights
+    
+    " Remove from data source
+    call remove(l:highlight_groups, l:found_index)
+    let b:coc_persistent_highlight_groups = l:highlight_groups
+    
+    " Remove match from window (find corresponding ID)
+    " This is tricky because indices match IF we keep them synced.
+    " It's safer to clear all window matches and re-render b: groups.
+    call s:ClearWindowHighlights()
+    call s:RestorePersistentHighlights()
+    
     echo "Persistent highlight cleared"
   else
-    " Case 2: New highlight -> Add it (do not clear others)
+    " Case 2: New highlight -> Add it
     call CocActionAsync('symbolRanges', function('s:HandleSymbolRanges'))
   endif
 endfunction
 
-function! s:ClearPersistentHighlight()
-  " Helper to clear ALL highlights (if needed, though not used in toggle anymore)
-  let l:highlights = get(w:, 'coc_persistent_highlights', [])
-  for l:item in l:highlights
+function! s:ClearWindowHighlights()
+  " Clear visual matches from current window using IDs stored in w:
+  let l:active_matches = get(w:, 'coc_persistent_active_matches', [])
+  for l:match in l:active_matches
     try
-      call matchdelete(l:item['id'])
+      call matchdelete(l:match['id'])
     catch /^Vim\%((\a\+)\)\=:E803/
     endtry
   endfor
-  let w:coc_persistent_highlights = []
+  let w:coc_persistent_active_matches = []
+endfunction
+
+function! s:RestorePersistentHighlights()
+  " Re-render matches for current buffer in current window
+  
+  " Safety check: Clear any residual matches in this window from previous buffers
+  " This handles cases where BufLeave might have failed or not triggered
+  call s:ClearWindowHighlights()
+
+  let l:groups = get(b:, 'coc_persistent_highlight_groups', [])
+  let l:active_matches = []
+  
+  for l:group in l:groups
+    let l:ranges = l:group['ranges']
+    if !empty(l:ranges)
+      let l:id = matchaddpos('CurrentWord', l:ranges, 10)
+      call add(l:active_matches, { 'id': l:id })
+    endif
+  endfor
+  
+  let w:coc_persistent_active_matches = l:active_matches
+endfunction
+
+function! s:ClearPersistentHighlight()
+  " Legacy helper, keep for compatibility or manual reset
+  call s:ClearWindowHighlights()
+  let b:coc_persistent_highlight_groups = []
 endfunction
 
 function! s:HandleSymbolRanges(err, ranges) abort
@@ -165,11 +207,18 @@ function! s:HandleSymbolRanges(err, ranges) abort
     return
   endif
 
+  " 1. Add to Buffer data source
+  let l:groups = get(b:, 'coc_persistent_highlight_groups', [])
+  call add(l:groups, { 'ranges': l:matches })
+  let b:coc_persistent_highlight_groups = l:groups
+  
+  " 2. Render in current Window
   let l:id = matchaddpos('CurrentWord', l:matches, 10)
   
-  let l:highlights = get(w:, 'coc_persistent_highlights', [])
-  call add(l:highlights, { 'id': l:id, 'ranges': l:matches })
-  let w:coc_persistent_highlights = l:highlights
+  " 3. Track active ID in Window
+  let l:active_matches = get(w:, 'coc_persistent_active_matches', [])
+  call add(l:active_matches, { 'id': l:id })
+  let w:coc_persistent_active_matches = l:active_matches
   
   echo "Persistent semantic highlight added"
 endfunction
